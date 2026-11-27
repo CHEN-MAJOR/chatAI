@@ -15,6 +15,11 @@ Stores one chat thread.
 - `id`
 - `userId`
 - `title`
+- `isFavorite`
+- `isArchived`
+- `groupId`
+- `aiProvider`
+- `aiModel`
 - `createdAt`
 - `updatedAt`
 

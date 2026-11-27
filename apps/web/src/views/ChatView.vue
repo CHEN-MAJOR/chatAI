@@ -1,9 +1,9 @@
 <script setup lang="ts">
-import type { AttachmentSummary, ChatMessage, ConversationGroup, ConversationSummary, PromptTemplate } from "@chatai/shared";
+import type { AiModelOption, AttachmentSummary, ChatMessage, ConversationGroup, ConversationSummary, PromptTemplate } from "@chatai/shared";
 import {
   Archive, ArrowDown, Bot, Check, CircleAlert, Copy, Download, Library, LoaderCircle, Menu,
   MessageSquarePlus, Moon, Palette, Paperclip, Pencil, RefreshCw, Save, Search, Send,
-  Settings2, Sparkles, Square, Star, Sun, Trash2, UserRound, X, ChevronLeft, ChevronRight, FolderTree
+  Settings2, Sparkles, Square, Star, Sun, Trash2, UserRound, X, ChevronLeft, ChevronRight, ChevronDown, FolderTree
 } from "@lucide/vue";
 import { computed, nextTick, onBeforeUnmount, onMounted, ref, watch } from "vue";
 import { useChatStore } from "../stores/chat";
@@ -102,6 +102,10 @@ const composerInput = ref<HTMLTextAreaElement | null>(null);
 const fileInput = ref<HTMLInputElement | null>(null);
 const settingsDialog = ref<HTMLElement | null>(null);
 const settingsTrigger = ref<HTMLButtonElement | null>(null);
+const modelPicker = ref<HTMLElement | null>(null);
+const modelPickerTrigger = ref<HTMLButtonElement | null>(null);
+const modelMenu = ref<HTMLElement | null>(null);
+const isModelMenuOpen = ref(false);
 const presetNameInput = ref<HTMLInputElement | null>(null);
 const isSidebarOpen = ref(false);
 const isSettingsOpen = ref(false);
@@ -179,6 +183,31 @@ const visualPresets = computed(() => [
   ...BUILT_IN_VISUAL_PRESETS,
   ...customVisualPresets.value
 ]);
+const aiModelGroups = computed(() => {
+  const groups = new Map<string, { provider: string; providerLabel: string; models: AiModelOption[] }>();
+  for (const item of chatStore.aiModels) {
+    const group = groups.get(item.provider) ?? {
+      provider: item.provider,
+      providerLabel: item.providerLabel,
+      models: []
+    };
+    group.models.push(item);
+    groups.set(item.provider, group);
+  }
+  return [...groups.values()];
+});
+const providerMarks: Record<string, string> = {
+  openai: "O",
+  deepseek: "DS",
+  qwen: "Q",
+  kimi: "K",
+  gemini: "G",
+  custom: "AI",
+  mock: "M"
+};
+const selectedProviderMark = computed(() => providerMarks[chatStore.selectedAiProvider] ?? "AI");
+const selectedProviderLabel = computed(() => chatStore.selectedAiOption?.providerLabel ?? "模型供应商");
+const selectedModelLabel = computed(() => chatStore.selectedAiOption?.label ?? (chatStore.selectedAiModel || "选择模型"));
 const activeVisualPresetId = computed(() => {
   const matchingPresets = visualPresets.value.filter(matchesCurrentVisualPreset);
   const lastAppliedPreset = matchingPresets.find((preset) => preset.id === lastAppliedVisualPresetId.value);
@@ -189,9 +218,9 @@ onMounted(async () => {
   draft.value = readLocalPreference("chatai-draft") || "";
   window.addEventListener("keydown", handleGlobalShortcut);
   window.addEventListener("storage", handlePreferenceStorageChange);
+  document.addEventListener("pointerdown", handleDocumentPointerDown);
   mediaQuery.addEventListener("change", applyPreferences);
-  await chatStore.loadConversations();
-  await loadWorkspace();
+  await Promise.all([chatStore.loadAiModels(), chatStore.loadConversations(), loadWorkspace()]);
   if (hasAuthToken()) currentUser.value = await fetchCurrentUser().catch(() => null);
   await nextTick();
   scrollToBottom(false);
@@ -199,6 +228,7 @@ onMounted(async () => {
 onBeforeUnmount(() => {
   window.removeEventListener("keydown", handleGlobalShortcut);
   window.removeEventListener("storage", handlePreferenceStorageChange);
+  document.removeEventListener("pointerdown", handleDocumentPointerDown);
   mediaQuery.removeEventListener("change", applyPreferences);
   if (copyTimer) clearTimeout(copyTimer);
   if (presetStatusTimer) clearTimeout(presetStatusTimer);
@@ -221,6 +251,12 @@ watch(draft, (value) => writeLocalPreference("chatai-draft", value));
 watch(lastAppliedVisualPresetId, (value) => {
   if (value) writeLocalPreference(ACTIVE_VISUAL_PRESET_STORAGE_KEY, value);
   else removeLocalPreference(ACTIVE_VISUAL_PRESET_STORAGE_KEY);
+});
+watch(() => chatStore.isStreaming, (streaming) => {
+  if (streaming) isModelMenuOpen.value = false;
+});
+watch(() => chatStore.activeConversationId, () => {
+  isModelMenuOpen.value = false;
 });
 
 function matchesCurrentVisualPreset(preset: Readonly<VisualPreset>) {
@@ -255,10 +291,16 @@ function handleGlobalShortcut(event: KeyboardEvent) {
   if (event.isComposing || event.keyCode === 229) return;
   if ((event.ctrlKey || event.metaKey) && event.key.toLowerCase() === "k") {
     event.preventDefault();
+    isModelMenuOpen.value = false;
     if (isSettingsOpen.value) return;
     isCommandPaletteOpen.value = !isCommandPaletteOpen.value;
   }
   if (event.key === "Escape") {
+    if (isModelMenuOpen.value) {
+      event.preventDefault();
+      closeModelMenu(true);
+      return;
+    }
     if (isSettingsOpen.value) {
       event.preventDefault();
       isSettingsOpen.value = false;
@@ -403,6 +445,38 @@ function deleteVisualPreset(preset: VisualPreset) {
   else void nextTick(() => presetNameInput.value?.focus());
   setPresetStatus(`已删除“${preset.name}”`);
 }
+function isActiveModel(item: AiModelOption) {
+  return chatStore.selectedAiProvider === item.provider && chatStore.selectedAiModel === item.model;
+}
+
+async function toggleModelMenu() {
+  if (chatStore.isStreaming) return;
+  isModelMenuOpen.value = !isModelMenuOpen.value;
+  if (!isModelMenuOpen.value) return;
+  await nextTick();
+  const target = modelMenu.value?.querySelector<HTMLElement>(".model-option.is-active")
+    ?? modelMenu.value?.querySelector<HTMLElement>(".model-option");
+  target?.focus();
+}
+
+function chooseModel(item: AiModelOption) {
+  isModelMenuOpen.value = false;
+  modelPickerTrigger.value?.focus();
+  void chatStore.selectAiModel(item.provider, item.model);
+}
+
+function closeModelMenu(restoreFocus = false) {
+  isModelMenuOpen.value = false;
+  if (restoreFocus) modelPickerTrigger.value?.focus();
+}
+
+function handleDocumentPointerDown(event: PointerEvent) {
+  if (!isModelMenuOpen.value) return;
+  const target = event.target;
+  if (target instanceof Node && modelPicker.value?.contains(target)) return;
+  isModelMenuOpen.value = false;
+}
+
 async function submitMessage(options: { regenerateFromMessageId?: string } = {}) {
   const content = draft.value.trim();
   if (!content || chatStore.isStreaming || isUploading.value) return;
@@ -729,9 +803,31 @@ async function confirmDelete() {
         <span class="chat-hud-node node-two" />
         <span class="chat-hud-node node-three" />
       </div>
-      <header class="chat-header">
+      <header class="chat-header" :class="{ 'model-menu-open': isModelMenuOpen }">
         <button class="menu-button icon-button" type="button" aria-label="打开会话列表" @click="isSidebarOpen = true"><Menu :size="21" /></button>
         <div class="header-copy"><p class="eyebrow">AI 智能助手</p><h2>{{ chatStore.activeConversation?.title ?? "新对话" }}</h2></div>
+        <div v-if="chatStore.aiModels.length" ref="modelPicker" class="model-picker-wrap">
+          <button ref="modelPickerTrigger" class="model-picker" :class="{ open: isModelMenuOpen }" type="button" :disabled="chatStore.isStreaming" :aria-expanded="isModelMenuOpen" aria-haspopup="listbox" :aria-label="`当前模型：${selectedProviderLabel} ${selectedModelLabel}`" title="切换当前对话使用的模型" @click.stop="toggleModelMenu">
+            <span class="model-provider-mark" :data-provider="chatStore.selectedAiProvider" aria-hidden="true">{{ selectedProviderMark }}</span>
+            <span class="model-picker-copy" aria-hidden="true">
+              <small>{{ selectedProviderLabel }}</small>
+              <strong>{{ selectedModelLabel }}</strong>
+            </span>
+            <ChevronDown class="model-picker-chevron" :size="14" aria-hidden="true" />
+          </button>
+          <Transition name="model-menu">
+            <div v-if="isModelMenuOpen" ref="modelMenu" class="model-menu" role="listbox" aria-label="选择模型">
+              <div class="model-menu-head"><span>选择模型</span><small>{{ chatStore.aiModels.length }} 个可用</small></div>
+              <div v-for="group in aiModelGroups" :key="group.provider" class="model-menu-group" role="group" :aria-label="group.providerLabel">
+                <div class="model-menu-group-head"><span class="model-menu-provider-mark" :data-provider="group.provider" aria-hidden="true">{{ providerMarks[group.provider] ?? "AI" }}</span><span>{{ group.providerLabel }}</span><small>{{ group.models.length }}</small></div>
+                <button v-for="item in group.models" :key="`${item.provider}::${item.model}`" class="model-option" :class="{ 'is-active': isActiveModel(item) }" type="button" role="option" :aria-selected="isActiveModel(item)" @click="chooseModel(item)">
+                  <span class="model-option-copy"><strong>{{ item.label }}</strong><small v-if="item.label !== item.model">{{ item.model }}</small></span>
+                  <span class="model-option-tags"><em v-if="item.isDefault">默认</em><Check v-if="isActiveModel(item)" :size="15" /></span>
+                </button>
+              </div>
+            </div>
+          </Transition>
+        </div>
         <span class="status-pill" :class="{ streaming: chatStore.isStreaming, offline: chatStore.isServiceAvailable === false }"><LoaderCircle v-if="chatStore.isStreaming" class="spin" :size="14" /><span v-else class="status-dot" />{{ chatStore.isStreaming ? "正在思考" : chatStore.isServiceAvailable === false ? "离线" : "在线" }}</span>
         <button class="header-settings icon-button" type="button" title="工作区资料库" @click="openWorkspace('prompts')"><Library :size="19" /></button>
         <button v-if="chatStore.messages.length" class="header-settings icon-button" type="button" title="导出 Markdown" @click="exportConversation"><Download :size="19" /></button>

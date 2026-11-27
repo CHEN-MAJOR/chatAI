@@ -99,11 +99,34 @@ The browser automatically uses the host name from the page URL for API requests,
 
 The API starts with `AI_PROVIDER=mock`, so the chat interface can stream replies without a model key.
 
-To connect an OpenAI-compatible model API, update `apps/api/.env`:
+内置 OpenAI 兼容供应商：`openai`、`deepseek`、`qwen`、`kimi`、`gemini`，也支持任意自定义兼容服务。配置了哪些供应商的 Key，页面顶部就会出现对应模型选择项；每个会话会记住自己使用的模型。
+
+在 `apps/api/.env` 中按需配置（示例）：
+
+```env
+# 默认使用 DeepSeek
+AI_PROVIDER=deepseek
+DEEPSEEK_API_KEY="your_deepseek_key"
+DEEPSEEK_MODELS="deepseek-chat,deepseek-reasoner"
+
+# 同时启用通义千问
+QWEN_API_KEY="your_dashscope_key"
+QWEN_MODELS="qwen-plus,qwen-max,qwen-turbo"
+
+# 同时启用 Kimi
+KIMI_API_KEY="your_moonshot_key"
+KIMI_MODELS="kimi-latest,moonshot-v1-32k,moonshot-v1-128k"
+```
+
+多个供应商可以同时配置。默认模型由 `AI_PROVIDER` 决定，用户也可以在页面上切换。
+
+自定义 OpenAI 兼容服务：
 
 ```env
 AI_PROVIDER=openai-compatible
-AI_BASE_URL="https://api.openai.com/v1"
+AI_BASE_URL="https://your-gateway.example.com/v1"
 AI_API_KEY="your_api_key"
-AI_MODEL="gpt-4o-mini"
+AI_MODELS="model-a,model-b"
 ```
+
+Gemini 需要使用 OpenAI 兼容端点 `https://generativelanguage.googleapis.com/v1beta/openai`。更多说明见 `docs/model-setup.md` 和 `apps/api/.env.example`。

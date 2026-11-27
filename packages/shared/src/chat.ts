@@ -6,8 +6,28 @@ export interface ConversationSummary {
   isFavorite: boolean;
   isArchived: boolean;
   groupId: string | null;
+  aiProvider: string | null;
+  aiModel: string | null;
   createdAt: string;
   updatedAt: string;
+}
+
+export interface AiModelOption {
+  provider: string;
+  providerLabel: string;
+  model: string;
+  label: string;
+  isDefault: boolean;
+}
+
+export interface AiModelSelection {
+  provider: string;
+  model: string;
+}
+
+export interface AiModelCatalog {
+  models: AiModelOption[];
+  defaultSelection: AiModelSelection;
 }
 
 export interface AttachmentSummary {
@@ -55,6 +75,8 @@ export interface ChatStreamRequest {
   parentMessageId?: string;
   replaceFromMessageId?: string;
   regenerateFromMessageId?: string;
+  provider?: string;
+  model?: string;
 }
 
 export type ChatStreamEvent =

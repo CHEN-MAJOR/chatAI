@@ -1,5 +1,6 @@
 import { ProxyAgent } from "undici";
 import { env } from "../../config/env.js";
+import type { AiModelConfig } from "./providers.js";
 
 export type AiRole = "system" | "user" | "assistant";
 
@@ -12,14 +13,15 @@ let proxyDispatcher: ProxyAgent | undefined;
 
 export async function* streamAiResponse(
   messages: AiChatMessage[],
+  modelConfig: AiModelConfig,
   signal?: AbortSignal
 ): AsyncGenerator<string> {
-  if (env.AI_PROVIDER === "mock" || !env.AI_API_KEY) {
+  if (modelConfig.kind === "mock") {
     yield* streamMockResponse(messages, signal);
     return;
   }
 
-  yield* streamOpenAiCompatibleResponse(messages, signal);
+  yield* streamOpenAiCompatibleResponse(messages, modelConfig, signal);
 }
 
 async function* streamMockResponse(
@@ -41,22 +43,23 @@ async function* streamMockResponse(
 
 async function* streamOpenAiCompatibleResponse(
   messages: AiChatMessage[],
+  modelConfig: AiModelConfig,
   signal?: AbortSignal
 ): AsyncGenerator<string> {
-  const url = `${trimTrailingSlash(env.AI_BASE_URL)}/chat/completions`;
+  const url = `${trimTrailingSlash(modelConfig.baseUrl)}/chat/completions`;
   const response = await fetchWithRetry(
     url,
     {
       method: "POST",
       headers: {
         "Content-Type": "application/json",
-        Authorization: `Bearer ${env.AI_API_KEY}`
+        Authorization: `Bearer ${modelConfig.apiKey}`
       },
       body: JSON.stringify({
-        model: env.AI_MODEL,
+        model: modelConfig.model,
         messages,
         stream: true,
-        temperature: 0.7
+        ...(modelConfig.model.includes("reasoner") ? {} : { temperature: 0.7 })
       }),
       dispatcher: getProxyDispatcher()
     },
@@ -66,7 +69,7 @@ async function* streamOpenAiCompatibleResponse(
   if (!response.ok || !response.body) {
     const message = await response.text();
     throw new Error(
-      `AI provider request failed: ${response.status} ${truncate(message, 500)}`
+      `${modelConfig.providerLabel} 请求失败：${response.status} ${truncate(message, 500)}`
     );
   }
 
@@ -140,12 +143,18 @@ function readDelta(data: string) {
     const payload = JSON.parse(data) as {
       choices?: Array<{
         delta?: {
-          content?: string;
+          content?: string | Array<string | { text?: string }>;
         };
       }>;
     };
-
-    return payload.choices?.[0]?.delta?.content ?? "";
+    const content = payload.choices?.[0]?.delta?.content;
+    if (typeof content === "string") return content;
+    if (Array.isArray(content)) {
+      return content
+        .map((part) => (typeof part === "string" ? part : part?.text ?? ""))
+        .join("");
+    }
+    return "";
   } catch {
     return "";
   }

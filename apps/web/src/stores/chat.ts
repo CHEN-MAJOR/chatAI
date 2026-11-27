@@ -1,10 +1,11 @@
-import type { AttachmentSummary, ChatMessage, ConversationSummary } from "@chatai/shared";
+import type { AiModelOption, AiModelSelection, AttachmentSummary, ChatMessage, ConversationSummary } from "@chatai/shared";
 import { defineStore } from "pinia";
 import { computed, ref } from "vue";
-import { deleteConversation, fetchConversations, fetchMessages, streamChat, updateConversation } from "../services/api";
+import { deleteConversation, fetchAiModels, fetchConversations, fetchMessages, streamChat, updateConversation } from "../services/api";
 import { createBrowserId } from "../utils/id";
 
 const pendingConversationId = "pending";
+const modelSelectionStorageKey = "chatai-model-selection";
 type SendOptions = { attachments?: AttachmentSummary[]; replaceFromMessageId?: string; regenerateFromMessageId?: string };
 
 export const useChatStore = defineStore("chat", () => {
@@ -18,12 +19,18 @@ export const useChatStore = defineStore("chat", () => {
   const isReceiving = ref(false);
   const errorMessage = ref("");
   const isServiceAvailable = ref<boolean | null>(null);
+  const aiModels = ref<AiModelOption[]>([]);
+  const aiDefaultSelection = ref<AiModelSelection | null>(null);
+  const selectedAiProvider = ref("");
+  const selectedAiModel = ref("");
+  const isLoadingAiModels = ref(false);
   let errorTimer: ReturnType<typeof setTimeout> | undefined;
   let streamController: AbortController | null = null;
   const messageRenderKeys = new Map<string, string>();
 
   const activeConversation = computed(() => conversations.value.find((item) => item.id === activeConversationId.value));
   const messages = computed(() => buildActivePath(allMessages.value, branchSelections.value));
+  const selectedAiOption = computed(() => aiModels.value.find((item) => item.provider === selectedAiProvider.value && item.model === selectedAiModel.value) ?? null);
 
   async function loadConversations() {
     isLoadingConversations.value = true;
@@ -32,8 +39,80 @@ export const useChatStore = defineStore("chat", () => {
       conversations.value = await fetchConversations();
       isServiceAvailable.value = true;
       if (!activeConversationId.value && conversations.value[0]) await selectConversation(conversations.value[0].id);
+      else applyConversationSelection(activeConversation.value);
     } catch (error) { isServiceAvailable.value = false; showError(error); }
     finally { isLoadingConversations.value = false; }
+  }
+
+  async function loadAiModels() {
+    isLoadingAiModels.value = true;
+    try {
+      const catalog = await fetchAiModels();
+      aiModels.value = catalog.models;
+      aiDefaultSelection.value = catalog.defaultSelection;
+      const conversation = activeConversation.value;
+      if (conversation?.aiProvider && conversation.aiModel && hasModel(conversation.aiProvider, conversation.aiModel)) {
+        applySelection({ provider: conversation.aiProvider, model: conversation.aiModel }, false);
+        return;
+      }
+      if (selectedAiProvider.value && selectedAiModel.value && hasModel(selectedAiProvider.value, selectedAiModel.value)) {
+        return;
+      }
+      const stored = readStoredModelSelection();
+      const candidate = stored && hasModel(stored.provider, stored.model)
+        ? stored
+        : catalog.defaultSelection;
+      if (candidate && hasModel(candidate.provider, candidate.model)) {
+        applySelection(candidate, false);
+      }
+    } catch (error) {
+      showError(error);
+    } finally {
+      isLoadingAiModels.value = false;
+    }
+  }
+
+  async function selectAiModel(provider: string, model: string) {
+    if (!hasModel(provider, model) || isStreaming.value) return false;
+    const conversation = activeConversation.value;
+    const previous = conversation?.aiProvider && conversation.aiModel
+      ? { provider: conversation.aiProvider, model: conversation.aiModel }
+      : null;
+    applySelection({ provider, model });
+    if (!conversation) return true;
+    try {
+      upsertConversation(await updateConversation(conversation.id, { aiProvider: provider, aiModel: model }));
+      return true;
+    } catch (error) {
+      if (previous) applySelection(previous, false);
+      showError(error);
+      return false;
+    }
+  }
+
+  function hasModel(provider: string, model: string) {
+    return aiModels.value.some((item) => item.provider === provider && item.model === model);
+  }
+
+  function applySelection(selection: AiModelSelection, persist = true) {
+    selectedAiProvider.value = selection.provider;
+    selectedAiModel.value = selection.model;
+    if (persist) writeStoredModelSelection(selection);
+  }
+
+  function applyConversationSelection(conversation: ConversationSummary | null | undefined) {
+    if (conversation?.aiProvider && conversation.aiModel && hasModel(conversation.aiProvider, conversation.aiModel)) {
+      applySelection({ provider: conversation.aiProvider, model: conversation.aiModel }, false);
+      return;
+    }
+    const stored = readStoredModelSelection();
+    if (stored && hasModel(stored.provider, stored.model)) {
+      applySelection(stored, false);
+      return;
+    }
+    if (aiDefaultSelection.value && hasModel(aiDefaultSelection.value.provider, aiDefaultSelection.value.model)) {
+      applySelection(aiDefaultSelection.value, false);
+    }
   }
 
   async function selectConversation(conversationId: string) {
@@ -46,6 +125,7 @@ export const useChatStore = defineStore("chat", () => {
       messageRenderKeys.clear();
       allMessages.value = (await fetchMessages(conversationId)).filter((message) => message.role !== "assistant" || message.content.trim());
       isServiceAvailable.value = true;
+      applyConversationSelection(conversations.value.find((item) => item.id === conversationId));
     } catch (error) { isServiceAvailable.value = false; showError(error); }
     finally { isLoadingMessages.value = false; }
   }
@@ -56,6 +136,7 @@ export const useChatStore = defineStore("chat", () => {
     allMessages.value = [];
     messageRenderKeys.clear();
     branchSelections.value = {};
+    applyConversationSelection(null);
     clearError();
   }
 
@@ -116,11 +197,14 @@ export const useChatStore = defineStore("chat", () => {
         attachmentIds: options.attachments?.map((file) => file.id),
         parentMessageId: replaceTarget ? undefined : parentMessageId ?? undefined,
         replaceFromMessageId: options.replaceFromMessageId,
-        regenerateFromMessageId: options.regenerateFromMessageId
+        regenerateFromMessageId: options.regenerateFromMessageId,
+        provider: selectedAiProvider.value || undefined,
+        model: selectedAiModel.value || undefined
       }, (event) => {
         if (event.type === "conversation") {
           activeConversationId.value = event.conversation.id;
           upsertConversation(event.conversation);
+          applyConversationSelection(event.conversation);
           movePendingMessages(event.conversation.id);
         } else if (event.type === "user_message" && localUser) {
           replaceLocalMessage(localUser.id, event.message);
@@ -145,7 +229,14 @@ export const useChatStore = defineStore("chat", () => {
         if (!currentAssistant?.content.trim()) messageRenderKeys.delete(localAssistantId);
       } else {
         if (!streamCompleted) patchMessage(localAssistantId, { content: "发送失败，请稍后再试。" });
-        isServiceAvailable.value = false;
+        // 同步服务端消息，移除只在本地存在的失败占位，避免下一次发送引用失效的父消息。
+        if (activeConversationId.value) {
+          try { syncServerMessages(await fetchMessages(activeConversationId.value)); } catch { /* 保留当前失败提示 */ }
+        } else {
+          await loadConversations();
+        }
+        // 模型/供应商错误说明后端仍在线，只有真正的网络故障才标记离线。
+        if (error instanceof TypeError) isServiceAvailable.value = false;
         showError(error);
       }
     } finally {
@@ -206,9 +297,9 @@ export const useChatStore = defineStore("chat", () => {
   }
 
   return {
-    activeConversation, activeConversationId, allMessages, conversations, clearError, editConversation,
-    errorMessage, isLoadingConversations, isLoadingMessages, isReceiving, isStreaming, isServiceAvailable,
-    loadConversations, messageRenderKey, messages, removeConversation, selectConversation, selectVariant, sendMessage,
+    activeConversation, activeConversationId, aiDefaultSelection, aiModels, allMessages, conversations, clearError, editConversation,
+    errorMessage, isLoadingAiModels, isLoadingConversations, isLoadingMessages, isReceiving, isStreaming, isServiceAvailable,
+    loadAiModels, loadConversations, messageRenderKey, messages, removeConversation, selectAiModel, selectConversation, selectVariant, selectedAiOption, selectedAiModel, selectedAiProvider, sendMessage,
     startNewConversation, stopStreaming, variantsFor
   };
 });
@@ -244,4 +335,25 @@ function normalizeError(error: unknown) {
   if (typeof error === "string") return error;
   if (error instanceof TypeError && error.message === "Failed to fetch") return "无法连接到 AI 服务，请确认后端服务已启动。";
   return error instanceof Error ? error.message : "请求失败，请稍后重试。";
+}
+function readStoredModelSelection(): AiModelSelection | null {
+  if (typeof window === "undefined") return null;
+  try {
+    const raw = window.localStorage.getItem(modelSelectionStorageKey);
+    if (!raw) return null;
+    const parsed = JSON.parse(raw) as Partial<AiModelSelection>;
+    if (typeof parsed.provider !== "string" || typeof parsed.model !== "string") return null;
+    if (!parsed.provider || !parsed.model) return null;
+    return { provider: parsed.provider, model: parsed.model };
+  } catch {
+    return null;
+  }
+}
+function writeStoredModelSelection(selection: AiModelSelection) {
+  if (typeof window === "undefined") return;
+  try {
+    window.localStorage.setItem(modelSelectionStorageKey, JSON.stringify(selection));
+  } catch {
+    // The current session still keeps the selection in memory.
+  }
 }

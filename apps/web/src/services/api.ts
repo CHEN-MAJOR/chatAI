@@ -1,5 +1,5 @@
 import type {
-  AttachmentSummary, ChatMessage, ChatStreamEvent, ChatStreamRequest,
+  AiModelCatalog, AttachmentSummary, ChatMessage, ChatStreamEvent, ChatStreamRequest,
   ConversationGroup, ConversationSummary, PromptTemplate
 } from "@chatai/shared";
 import { createBrowserId } from "../utils/id";
@@ -72,6 +72,10 @@ export async function fetchConversations() {
   const response = await apiFetch("/api/conversations");
   return ((await response.json()) as { conversations: ConversationSummary[] }).conversations;
 }
+export async function fetchAiModels() {
+  const response = await apiFetch("/api/ai/models");
+  return (await response.json()) as AiModelCatalog;
+}
 export async function fetchMessages(conversationId: string) {
   const response = await apiFetch(`/api/conversations/${conversationId}/messages`);
   return ((await response.json()) as { messages: ChatMessage[] }).messages;
@@ -85,7 +89,7 @@ export async function deleteConversation(conversationId: string) {
 }
 export async function updateConversation(
   conversationId: string,
-  updates: Partial<Pick<ConversationSummary, "title" | "isFavorite" | "isArchived" | "groupId">>
+  updates: Partial<Pick<ConversationSummary, "title" | "isFavorite" | "isArchived" | "groupId" | "aiProvider" | "aiModel">>
 ) {
   const response = await apiFetch(`/api/conversations/${conversationId}`, { method: "PATCH", body: JSON.stringify(updates) });
   return ((await response.json()) as { conversation: ConversationSummary }).conversation;

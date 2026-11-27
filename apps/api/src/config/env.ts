@@ -28,6 +28,15 @@ if (!dotenvLoaded) {
 }
 import { z } from "zod";
 
+const optionalString = z.preprocess(
+  (value) => (typeof value === "string" && value.trim() === "" ? undefined : value),
+  z.string().optional()
+);
+const optionalUrl = z.preprocess(
+  (value) => (typeof value === "string" && value.trim() === "" ? undefined : value),
+  z.string().url().optional()
+);
+
 const envSchema = z.object({
   NODE_ENV: z
     .enum(["development", "test", "production"])
@@ -36,11 +45,27 @@ const envSchema = z.object({
   WEB_ORIGIN: z.string().default("http://localhost:5173"),
   DATABASE_URL: z.string().optional(),
   AI_PROVIDER: z
-    .enum(["mock", "openai-compatible", "gemini"])
+    .enum(["mock", "openai", "openai-compatible", "deepseek", "qwen", "kimi", "gemini", "custom"])
     .default("mock"),
-  AI_BASE_URL: z.string().url().default("https://api.openai.com/v1"),
-  AI_API_KEY: z.string().optional(),
-  AI_MODEL: z.string().default("gpt-4o-mini"),
+  AI_BASE_URL: optionalUrl,
+  AI_API_KEY: optionalString,
+  AI_MODEL: optionalString,
+  AI_MODELS: optionalString,
+  OPENAI_API_KEY: optionalString,
+  OPENAI_BASE_URL: optionalUrl,
+  OPENAI_MODELS: optionalString,
+  DEEPSEEK_API_KEY: optionalString,
+  DEEPSEEK_BASE_URL: optionalUrl,
+  DEEPSEEK_MODELS: optionalString,
+  QWEN_API_KEY: optionalString,
+  QWEN_BASE_URL: optionalUrl,
+  QWEN_MODELS: optionalString,
+  KIMI_API_KEY: optionalString,
+  KIMI_BASE_URL: optionalUrl,
+  KIMI_MODELS: optionalString,
+  GEMINI_API_KEY: optionalString,
+  GEMINI_BASE_URL: optionalUrl,
+  GEMINI_MODELS: optionalString,
   AI_REQUEST_TIMEOUT_MS: z.coerce.number().int().min(10_000).max(300_000).default(90_000),
   AI_MAX_RETRIES: z.coerce.number().int().min(0).max(5).default(2),
   SSE_HEARTBEAT_MS: z.coerce.number().int().min(5_000).max(60_000).default(15_000)

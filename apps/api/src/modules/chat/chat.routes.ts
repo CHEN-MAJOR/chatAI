@@ -6,6 +6,7 @@ import { allowedOrigins, env } from "../../config/env.js";
 import { resolveUser } from "../../lib/identity.js";
 import { prisma } from "../../lib/prisma.js";
 import { type AiChatMessage, streamAiResponse } from "../ai/ai.service.js";
+import { AiSelectionError, resolveAiSelection, type AiModelConfig } from "../ai/providers.js";
 
 const idParams = z.object({ id: z.string().min(1).max(191) });
 const createConversationSchema = z.object({
@@ -16,7 +17,9 @@ const updateConversationSchema = z.object({
   title: z.string().trim().min(1).max(120).optional(),
   isFavorite: z.boolean().optional(),
   isArchived: z.boolean().optional(),
-  groupId: z.string().min(1).max(191).nullable().optional()
+  groupId: z.string().min(1).max(191).nullable().optional(),
+  aiProvider: z.string().min(1).max(40).optional(),
+  aiModel: z.string().min(1).max(120).optional()
 }).refine((value) => Object.keys(value).length > 0);
 const chatStreamRequestSchema = z.object({
   conversationId: z.string().min(1).max(191).optional(),
@@ -24,7 +27,9 @@ const chatStreamRequestSchema = z.object({
   attachmentIds: z.array(z.string().min(1).max(191)).max(8).optional(),
   parentMessageId: z.string().min(1).max(191).optional(),
   replaceFromMessageId: z.string().min(1).max(191).optional(),
-  regenerateFromMessageId: z.string().min(1).max(191).optional()
+  regenerateFromMessageId: z.string().min(1).max(191).optional(),
+  provider: z.string().min(1).max(40).optional(),
+  model: z.string().min(1).max(120).optional()
 });
 
 export async function chatRoutes(app: FastifyInstance) {
@@ -74,8 +79,27 @@ export async function chatRoutes(app: FastifyInstance) {
     if (body.data.groupId && !(await ownsGroup(user.id, body.data.groupId))) {
       return reply.code(400).send({ error: "会话分组不存在。" });
     }
+    let updateData = body.data;
+    if (body.data.aiProvider !== undefined || body.data.aiModel !== undefined) {
+      if (!body.data.aiProvider || !body.data.aiModel) {
+        return reply.code(400).send({ error: "请同时选择模型供应商和模型。" });
+      }
+      try {
+        const selection = resolveAiSelection(body.data.aiProvider, body.data.aiModel);
+        updateData = {
+          ...body.data,
+          aiProvider: selection.provider,
+          aiModel: selection.model
+        };
+      } catch (error) {
+        if (error instanceof AiSelectionError) {
+          return reply.code(400).send({ error: error.message });
+        }
+        throw error;
+      }
+    }
     const updated = await prisma.conversation.updateMany({
-      where: { id: params.data.id, userId: user.id }, data: body.data
+      where: { id: params.data.id, userId: user.id }, data: updateData
     });
     if (!updated.count) return reply.code(404).send({ error: "会话不存在。" });
     const conversation = await prisma.conversation.findUniqueOrThrow({ where: { id: params.data.id } });
@@ -99,6 +123,27 @@ export async function chatRoutes(app: FastifyInstance) {
     const conversation = await getOrCreateConversation(user.id, parsed.data.conversationId, parsed.data.message);
     if (!conversation) return reply.code(404).send({ error: "会话不存在。" });
 
+    let modelConfig: AiModelConfig;
+    try {
+      modelConfig = resolveAiSelection(
+        parsed.data.provider ?? conversation.aiProvider,
+        parsed.data.model ?? conversation.aiModel
+      );
+    } catch (error) {
+      if (error instanceof AiSelectionError) {
+        return reply.code(400).send({ error: error.message });
+      }
+      throw error;
+    }
+
+    let activeConversation = conversation;
+    if (conversation.aiProvider !== modelConfig.provider || conversation.aiModel !== modelConfig.model) {
+      activeConversation = await prisma.conversation.update({
+        where: { id: conversation.id },
+        data: { aiProvider: modelConfig.provider, aiModel: modelConfig.model }
+      });
+    }
+
     reply.hijack();
     reply.raw.writeHead(200, {
       "Content-Type": "text/event-stream; charset=utf-8",
@@ -120,12 +165,12 @@ export async function chatRoutes(app: FastifyInstance) {
     const send = (event: ChatStreamEvent) => { if (!isClosed) reply.raw.write(`data: ${JSON.stringify(event)}\n\n`); };
 
     try {
-      send({ type: "conversation", conversation: mapConversation(conversation) });
+      send({ type: "conversation", conversation: mapConversation(activeConversation) });
       const userMessage = await resolveUserMessage(request, user.id, conversation.id, parsed.data);
       if (!parsed.data.regenerateFromMessageId) send({ type: "user_message", message: mapMessage(userMessage) });
       const context = await buildContext(conversation.id, userMessage.id);
       let assistantContent = "";
-      for await (const delta of streamAiResponse(context, controller.signal)) {
+      for await (const delta of streamAiResponse(context, modelConfig, controller.signal)) {
         assistantContent += delta;
         send({ type: "message_delta", delta });
       }
@@ -234,7 +279,7 @@ function buildTitle(message: string) {
 }
 type MessageWithAttachments = Message & { attachments: Attachment[] };
 function mapConversation(conversation: Conversation): ConversationSummary {
-  return { id: conversation.id, title: conversation.title, isFavorite: conversation.isFavorite, isArchived: conversation.isArchived, groupId: conversation.groupId, createdAt: conversation.createdAt.toISOString(), updatedAt: conversation.updatedAt.toISOString() };
+  return { id: conversation.id, title: conversation.title, isFavorite: conversation.isFavorite, isArchived: conversation.isArchived, groupId: conversation.groupId, aiProvider: conversation.aiProvider, aiModel: conversation.aiModel, createdAt: conversation.createdAt.toISOString(), updatedAt: conversation.updatedAt.toISOString() };
 }
 function mapMessage(message: MessageWithAttachments): ChatMessage {
   return {

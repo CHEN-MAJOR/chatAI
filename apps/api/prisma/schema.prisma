@@ -47,6 +47,8 @@ model Conversation {
   isFavorite Boolean  @default(false)
   isArchived Boolean  @default(false)
   groupId    String?
+  aiProvider String?  @db.VarChar(40)
+  aiModel    String?  @db.VarChar(120)
   user      User?     @relation(fields: [userId], references: [id], onDelete: SetNull)
   group     ConversationGroup? @relation(fields: [groupId], references: [id], onDelete: SetNull)
   messages  Message[]
@@ -56,6 +58,7 @@ model Conversation {
   @@index([userId])
   @@index([groupId])
   @@index([updatedAt])
+  @@index([isArchived, isFavorite, updatedAt])
 }
 
 model Message {

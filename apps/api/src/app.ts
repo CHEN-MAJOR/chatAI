@@ -6,6 +6,7 @@ import { healthRoutes } from "./modules/health/health.routes.js";
 import { workspaceRoutes } from "./modules/workspace/workspace.routes.js";
 import { attachmentRoutes } from "./modules/attachment/attachment.routes.js";
 import { authRoutes } from "./modules/auth/auth.routes.js";
+import { aiRoutes } from "./modules/ai/ai.routes.js";
 import multipart from "@fastify/multipart";
 
 export async function buildApp() {
@@ -25,6 +26,7 @@ export async function buildApp() {
   });
 
   await app.register(healthRoutes, { prefix: "/health" });
+  await app.register(aiRoutes, { prefix: "/api/ai" });
   await app.register(chatRoutes, { prefix: "/api" });
   await app.register(workspaceRoutes, { prefix: "/api" });
   await app.register(attachmentRoutes, { prefix: "/api" });
