@@ -7,18 +7,19 @@ import { fileURLToPath } from "url";
 const __filename = fileURLToPath(import.meta.url);
 const __dirname = path.dirname(__filename);
 
-// 优先加载 apps/api/.env，再加载仓库根的 .env，最后使用默认 dotenv 行为
+// 先加载仓库根 .env 作为默认值，再用 apps/api/.env 覆盖，最后回退到默认 dotenv 行为。
+// 不能依赖 process.cwd()：通过 npm workspace 启动时 cwd 是 apps/api，会与 localEnv 重合。
 const localEnv = path.resolve(__dirname, "../../.env");
-const rootEnv = path.resolve(process.cwd(), ".env");
+const rootEnv = path.resolve(__dirname, "../../../../.env");
 let dotenvLoaded = false;
 
-if (fs.existsSync(localEnv)) {
-  dotenv.config({ path: localEnv, override: true });
+if (fs.existsSync(rootEnv)) {
+  dotenv.config({ path: rootEnv, override: false });
   dotenvLoaded = true;
 }
 
-if (fs.existsSync(rootEnv)) {
-  dotenv.config({ path: rootEnv, override: true });
+if (fs.existsSync(localEnv)) {
+  dotenv.config({ path: localEnv, override: true });
   dotenvLoaded = true;
 }
 
